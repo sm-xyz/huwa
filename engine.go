@@ -9,7 +9,6 @@ import (
 	"fmt"
 	"log"
 	"net/http"
-	"os"
 	"strings"
 	"sync"
 	"time"
@@ -17,7 +16,6 @@ import (
 	"github.com/skip2/go-qrcode"
 	"go.mau.fi/whatsmeow"
 	waProto "go.mau.fi/whatsmeow/binary/proto"
-	"go.mau.fi/whatsmeow/store"
 	"go.mau.fi/whatsmeow/store/sqlstore"
 	"go.mau.fi/whatsmeow/types"
 	"go.mau.fi/whatsmeow/types/events"
@@ -73,7 +71,7 @@ func NewEngineManager(dbPath, defaultWH, secret string) (*EngineManager, error) 
 
 	// SQLite connection string dengan WAL mode dan busy timeout 5s
 	dsn := fmt.Sprintf("file:%s?_pragma=journal_mode(WAL)&_pragma=synchronous(NORMAL)&_pragma=busy_timeout(5000)", dbPath)
-	container, err := sqlstore.New("sqlite3", dsn, logger)
+	container, err := sqlstore.New(context.Background(), "sqlite3", dsn, logger)
 	if err != nil {
 		return nil, fmt.Errorf("gagal inisialisasi sqlstore whatsmeow: %w", err)
 	}
@@ -117,7 +115,7 @@ func NewEngineManager(dbPath, defaultWH, secret string) (*EngineManager, error) 
 
 // restoreAllSessions menyambungkan kembali semua nomor WA yang pernah dipairing saat service start
 func (m *EngineManager) restoreAllSessions() error {
-	devices, err := m.container.GetAllDevices()
+	devices, err := m.container.GetAllDevices(context.Background())
 	if err != nil {
 		return err
 	}
@@ -430,5 +428,5 @@ func (m *EngineManager) SendTypingPresence(sessionID, phone, groupJID string) er
 		recipient = types.NewJID(cleanPhone, types.DefaultUserServer)
 	}
 
-	return ds.Client.SendChatPresence(recipient, types.ChatPresenceComposing, types.ChatPresenceMediaText)
+	return ds.Client.SendChatPresence(context.Background(), recipient, types.ChatPresenceComposing, types.ChatPresenceMediaText)
 }

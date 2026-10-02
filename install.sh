@@ -4,8 +4,14 @@
 # ==============================================================================
 set -e
 
-# Pastikan /usr/local/go/bin ada dalam PATH
-export PATH="/usr/local/go/bin:$PATH"
+# Otomatis eskalasi ke sudo jika dijalankan oleh non-root user (seperti user ibun)
+if [ "$EUID" -ne 0 ]; then
+  echo "[INFO] Skrip membutuhkan hak akses root. Melanjutkan dengan sudo..."
+  exec sudo -E bash "$0" "$@"
+fi
+
+# Pastikan /usr/local/go/bin dan /usr/bin ada dalam PATH
+export PATH="/usr/local/go/bin:/usr/bin:$PATH"
 
 RED='\033[0;31m'
 GREEN='\033[0;32m'
@@ -16,13 +22,6 @@ NC='\033[0m'
 echo -e "${BLUE}================================================================${NC}"
 echo -e "${GREEN}   HUWA (High-Utility WhatsApp Agent) - Automated Installer     ${NC}"
 echo -e "${BLUE}================================================================${NC}"
-
-# Cek apakah dijalankan sebagai root
-if [ "$EUID" -ne 0 ]; then
-  echo -e "${RED}[ERROR] Skrip ini wajib dijalankan sebagai root.${NC}"
-  echo "Silakan gunakan: sudo bash install.sh"
-  exit 1
-fi
 
 INSTALL_DIR="/opt/huwa"
 DATA_DIR="/var/lib/huwa"
@@ -35,12 +34,26 @@ mkdir -p "$INSTALL_DIR"
 mkdir -p "$DATA_DIR"
 mkdir -p "$LOG_DIR"
 chmod 755 "$INSTALL_DIR"
-chmod 700 "$DATA_DIR"
+chmod 755 "$DATA_DIR"
 chmod 755 "$LOG_DIR"
 
 echo -e "${YELLOW}[2/6] Memeriksa compiler Golang...${NC}"
+NEED_GO_INSTALL=false
 if ! command -v go &> /dev/null; then
-    echo -e "${BLUE}[INFO] Go belum terinstall. Mengunduh dan menginstall Golang 1.22 resmi...${NC}"
+    NEED_GO_INSTALL=true
+else
+    # Cek versi minimal
+    GO_VER=$(go version | awk '{print $3}' | sed 's/go//')
+    GO_MAJOR=$(echo "$GO_VER" | cut -d. -f1)
+    GO_MINOR=$(echo "$GO_VER" | cut -d. -f2)
+    if [ "$GO_MAJOR" -lt 1 ] || [ "$GO_MINOR" -lt 22 ]; then
+        echo -e "${BLUE}[INFO] Versi Go terpasang ($GO_VER) terlalu lama. Memperbarui ke Go terbaru...${NC}"
+        NEED_GO_INSTALL=true
+    fi
+fi
+
+if [ "$NEED_GO_INSTALL" = true ]; then
+    echo -e "${BLUE}[INFO] Mengunduh dan menginstall Golang 1.22 resmi...${NC}"
     ARCH=$(uname -m)
     GO_ARCH="amd64"
     if [ "$ARCH" = "aarch64" ] || [ "$ARCH" = "arm64" ]; then
@@ -50,17 +63,17 @@ if ! command -v go &> /dev/null; then
     wget -q --show-progress "https://go.dev/dl/$GO_TAR" -O "/tmp/$GO_TAR"
     rm -rf /usr/local/go && tar -C /usr/local -xzf "/tmp/$GO_TAR"
     rm -f "/tmp/$GO_TAR"
-    export PATH=$PATH:/usr/local/go/bin
+    export PATH="/usr/local/go/bin:$PATH"
     if ! grep -q "/usr/local/go/bin" /etc/profile; then
         echo 'export PATH=$PATH:/usr/local/go/bin' >> /etc/profile
     fi
-    ln -sf /usr/local/go/bin/go /usr/bin/go
-    ln -sf /usr/local/go/bin/gofmt /usr/bin/gofmt
-    echo -e "${GREEN}[OK] Golang $(go version) berhasil diinstall.${NC}"
-else
-    ln -sf /usr/local/go/bin/go /usr/bin/go 2>/dev/null || true
-    echo -e "${GREEN}[OK] Golang terdeteksi: $(go version)${NC}"
 fi
+
+# Buat symlink universal di /usr/bin agar user mana pun bisa langsung akses perintah go
+ln -sf /usr/local/go/bin/go /usr/bin/go 2>/dev/null || true
+ln -sf /usr/local/go/bin/gofmt /usr/bin/gofmt 2>/dev/null || true
+
+echo -e "${GREEN}[OK] Golang aktif: $(go version)${NC}"
 
 echo -e "${YELLOW}[3/6] Mengompilasi binary huwa (Pure Go, Statically Linked)...${NC}"
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -69,17 +82,19 @@ cd "$SCRIPT_DIR"
 # Pastikan go.mod bersih
 echo -e "module huwa\n\ngo 1.22" > "$SCRIPT_DIR/go.mod"
 
-# Download dependensi
+# Download dependensi resmi
 echo "[INFO] Mengunduh modul whatsmeow dan modernc sqlite..."
 go get -u go.mau.fi/whatsmeow@latest
 go get -u github.com/skip2/go-qrcode@latest
 go get -u modernc.org/sqlite@latest
 go mod tidy
 
-# Kompilasi single binary
-echo "[INFO] Mengompilasi $BIN_TARGET..."
-CGO_ENABLED=0 go build -ldflags="-s -w" -o "$BIN_TARGET" .
-chmod +x "$BIN_TARGET"
+# Kompilasi ke binary lokal lalu salin dengan aman
+echo "[INFO] Mengompilasi binary huwa..."
+CGO_ENABLED=0 go build -ldflags="-s -w" -o "$SCRIPT_DIR/huwa_bin" .
+cp -f "$SCRIPT_DIR/huwa_bin" "$BIN_TARGET"
+rm -f "$SCRIPT_DIR/huwa_bin"
+chmod 755 "$BIN_TARGET"
 
 echo -e "${GREEN}[OK] Binary huwa berhasil dikompilasi ($(du -h "$BIN_TARGET" | cut -f1)).${NC}"
 
@@ -92,7 +107,7 @@ HUWA_PORT=8080
 HUWA_SECRET=$RANDOM_SECRET
 HUWA_DB_PATH=$DATA_DIR/huwa.db
 HUWA_DEFAULT_WEBHOOK=http://127.0.0.1/wp-json/adv/v1/chatbot/webhook
-HUWA_MAX_DEVICES=100
+HUWA_MAX_DEVICES=150
 HUWA_LOG_LEVEL=info
 HUWA_MIN_TYPING_DELAY=1500
 HUWA_MAX_TYPING_DELAY=4000
@@ -132,24 +147,23 @@ systemctl enable huwa
 systemctl restart huwa
 
 echo -e "${YELLOW}[6/6] Memverifikasi status daemon huwa...${NC}"
-sleep 2
+sleep 3
 
-if curl -s "http://127.0.0.1:8080/api/status" | grep -q "huwa"; then
+if curl -s "http://127.0.0.1:8080/api/status" | grep -q "running"; then
     echo -e "${GREEN}================================================================${NC}"
     echo -e "${GREEN}   INSTALASI HUWA BERHASIL & DAEMON AKTIF NORMAL!              ${NC}"
     echo -e "${GREEN}================================================================${NC}"
-    echo -e "Port Internal   : ${YELLOW}127.0.0.1:8080${NC}"
+    echo -e "Port Bind       : ${YELLOW}0.0.0.0:8080${NC}"
     SECRET_VAL=$(grep "HUWA_SECRET=" "$INSTALL_DIR/huwa.env" | cut -d'=' -f2)
     echo -e "Huwa Secret Key : ${YELLOW}$SECRET_VAL${NC}"
     echo -e "Database Path   : ${YELLOW}$DATA_DIR/huwa.db${NC}"
     echo -e "Log File        : ${YELLOW}$LOG_DIR/huwa.log${NC}"
     echo ""
     echo -e "${BLUE}Perintah Pengelolaan:${NC}"
-    echo -e "• Cek status  : ${YELLOW}systemctl status huwa${NC}"
+    echo -e "• Cek status  : ${YELLOW}curl http://127.0.0.1:8080/api/status${NC}"
     echo -e "• Lihat log   : ${YELLOW}tail -f $LOG_DIR/huwa.log${NC}"
-    echo -e "• Restart     : ${YELLOW}systemctl restart huwa${NC}"
+    echo -e "• Restart     : ${YELLOW}sudo systemctl restart huwa${NC}"
 else
     echo -e "${RED}[WARNING] Service terpasang tetapi respon HTTP di port 8080 belum terdeteksi.${NC}"
-    echo "Silakan periksa log via: journalctl -u huwa -e"
+    echo "Silakan periksa log via: sudo journalctl -u huwa -n 30 --no-pager"
 fi
-EOF

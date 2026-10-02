@@ -1,10 +1,10 @@
 package main
 
 import (
+	"context"
 	"encoding/json"
 	"net/http"
 	"strconv"
-	"strings"
 	"time"
 )
 
@@ -128,7 +128,7 @@ func (h *APIHandler) HandleSession(w http.ResponseWriter, r *http.Request) {
 	if r.Method == http.MethodDelete {
 		h.manager.mu.Lock()
 		if ds.Client != nil {
-			_ = ds.Client.Logout()
+			_ = ds.Client.Logout(context.Background())
 			ds.Client.Disconnect()
 		}
 		delete(h.manager.sessions, sessionID)

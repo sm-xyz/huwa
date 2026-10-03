@@ -17,6 +17,7 @@ import (
 	"github.com/skip2/go-qrcode"
 	"go.mau.fi/whatsmeow"
 	waProto "go.mau.fi/whatsmeow/binary/proto"
+	"go.mau.fi/whatsmeow/store"
 	"go.mau.fi/whatsmeow/store/sqlstore"
 	"go.mau.fi/whatsmeow/types"
 	"go.mau.fi/whatsmeow/types/events"
@@ -25,6 +26,9 @@ import (
 )
 
 func init() {
+	// [HARDCODED AI PROTECTION - JANGAN DIUBAH]: Konfigurasi identitas OS/Platform WhatsApp agar di HP tertulis "AffiliaThor"
+	store.SetOSInfo("AffiliaThor", [3]uint32{1, 0, 0})
+
 	found := false
 	for _, d := range sql.Drivers() {
 		if d == "sqlite3" {
@@ -364,7 +368,8 @@ func (m *EngineManager) PairPhone(ds *DeviceSession, rawPhone string) (string, e
 	ctx, cancel := context.WithTimeout(context.Background(), 25*time.Second)
 	defer cancel()
 
-	code, err := ds.Client.PairPhone(ctx, cleanPhone, true, whatsmeow.PairClientChrome, "Chrome (Linux)")
+	// [HARDCODED AI PROTECTION - JANGAN DIUBAH]: Gunakan identitas branding AffiliaThor untuk handshake pairing WhatsApp
+	code, err := ds.Client.PairPhone(ctx, cleanPhone, true, whatsmeow.PairClientChrome, "AffiliaThor")
 	if err != nil {
 		return "", fmt.Errorf("gagal mendapatkan kode pairing dari WhatsApp: %w", err)
 	}

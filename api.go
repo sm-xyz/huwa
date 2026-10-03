@@ -175,6 +175,14 @@ func (h *APIHandler) HandleSession(w http.ResponseWriter, r *http.Request) {
 
 	// METHOD GET, POST, PUT: Semua mengembalikan status sesi & QR code jika pairing
 	if r.Method == http.MethodGet || r.Method == http.MethodPost || r.Method == http.MethodPut {
+		// Validasi otentikasi login sejati (bukan sekadar socket connect)
+		if ds.Client == nil || !ds.Client.IsConnected() || !ds.Client.IsLoggedIn() || ds.Client.Store.ID == nil {
+			ds.IsConnected = false
+			if ds.Status == "connected" {
+				ds.Status = "disconnected"
+			}
+		}
+
 		// Jika metode PUT atau query reset=1 (reset QR), putuskan koneksi client aktif dan generate QR baru
 		isReset := (r.Method == http.MethodPut || r.URL.Query().Get("reset") == "1" || r.URL.Query().Get("force_new") == "1")
 		if isReset && !ds.IsConnected {
@@ -182,6 +190,7 @@ func (h *APIHandler) HandleSession(w http.ResponseWriter, r *http.Request) {
 				ds.Client.Disconnect()
 			}
 			ds.QRCode = ""
+			ds.PairingCode = ""
 			ds.Status = "pairing"
 		}
 
@@ -556,17 +565,35 @@ func (h *APIHandler) HandleWebhook(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
+	var phone string
 	h.manager.mu.Lock()
 	if ds, exists := h.manager.sessions[req.SessionID]; exists {
 		ds.WebhookURL = req.URL
 		ds.WebhookSecret = req.Token
+		phone = ds.Phone
 	}
 	h.manager.mu.Unlock()
 
-	_, _ = h.manager.db.Exec(`
-		UPDATE huwa_metadata SET webhook_url = ?, webhook_secret = ?, updated_at = CURRENT_TIMESTAMP
-		WHERE session_id = ?
-	`, req.URL, req.Token, req.SessionID)
+	if phone != "" {
+		_, _ = h.manager.db.Exec(`
+			INSERT INTO huwa_metadata (session_id, phone, webhook_url, webhook_secret, updated_at)
+			VALUES (?, ?, ?, ?, CURRENT_TIMESTAMP)
+			ON CONFLICT(session_id) DO UPDATE SET 
+				phone = CASE WHEN excluded.phone != '' THEN excluded.phone ELSE huwa_metadata.phone END,
+				webhook_url = excluded.webhook_url, 
+				webhook_secret = excluded.webhook_secret, 
+				updated_at = CURRENT_TIMESTAMP
+		`, req.SessionID, phone, req.URL, req.Token)
+	} else {
+		_, _ = h.manager.db.Exec(`
+			INSERT INTO huwa_metadata (session_id, webhook_url, webhook_secret, updated_at)
+			VALUES (?, ?, ?, CURRENT_TIMESTAMP)
+			ON CONFLICT(session_id) DO UPDATE SET 
+				webhook_url = excluded.webhook_url, 
+				webhook_secret = excluded.webhook_secret, 
+				updated_at = CURRENT_TIMESTAMP
+		`, req.SessionID, req.URL, req.Token)
+	}
 
 	_ = json.NewEncoder(w).Encode(map[string]interface{}{
 		"success": true,

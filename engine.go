@@ -116,6 +116,10 @@ func NewEngineManager(dbPath, defaultWH, secret string) (*EngineManager, error) 
 		log.Printf("[Huwa] Warning saat restore sessions: %v", err)
 	}
 
+	// [ALWAYS ACTIVE PRESENCE & AUTO-RECONNECT WATCHDOG]
+	// Menjaga koneksi tetap online 24/7 dan status di WhatsApp HP selalu "Aktif" (seperti Fonnte)
+	go mgr.startWatchdogLoop(30 * time.Second)
+
 	return mgr, nil
 }
 
@@ -161,7 +165,7 @@ func (m *EngineManager) restoreAllSessions() error {
 		go func(c *whatsmeow.Client, s *DeviceSession) {
 			if err := c.Connect(); err != nil {
 				log.Printf("[Huwa] Gagal auto-reconnect sesi %s: %v", s.SessionID, err)
-			} else {
+			} else if c.Store.ID != nil && c.IsLoggedIn() {
 				s.IsConnected = true
 				s.Status = "connected"
 				log.Printf("[Huwa] Auto-reconnect berhasil: %s (+%s)", s.SessionID, s.Phone)
@@ -178,7 +182,7 @@ func (m *EngineManager) GetOrCreateSession(sessionID string, userID int) (*Devic
 	defer m.mu.Unlock()
 
 	if ds, exists := m.sessions[sessionID]; exists {
-		if ds.Client != nil && ds.Client.IsConnected() {
+		if ds.Client != nil && ds.Client.IsConnected() && ds.Client.IsLoggedIn() && ds.Client.Store.ID != nil {
 			ds.IsConnected = true
 			ds.Status = "connected"
 			if ds.Client.Store.ID != nil {
@@ -231,7 +235,7 @@ func (m *EngineManager) GenerateQR(ds *DeviceSession) (string, error) {
 		return "", fmt.Errorf("client tidak tersedia")
 	}
 
-	if ds.Client.IsConnected() {
+	if ds.Client.IsConnected() && ds.Client.IsLoggedIn() && ds.Client.Store.ID != nil {
 		ds.IsConnected = true
 		ds.Status = "connected"
 		return "", nil
@@ -377,6 +381,29 @@ func (m *EngineManager) setupEventHandler(ds *DeviceSession) {
 	ds.Client.AddEventHandler(func(rawEvt interface{}) {
 		switch evt := rawEvt.(type) {
 		case *events.Connected:
+			if ds.Client.Store.ID != nil && ds.Client.IsLoggedIn() {
+				ds.IsConnected = true
+				ds.Status = "connected"
+				ds.QRCode = ""
+				ds.PairingCode = ""
+				ds.Phone = ds.Client.Store.ID.User
+				ds.PushName = ds.Client.Store.PushName
+				_, _ = m.db.Exec(`
+					UPDATE huwa_metadata SET device_jid = ?, phone = ?, updated_at = CURRENT_TIMESTAMP 
+					WHERE session_id = ?
+				`, ds.Client.Store.ID.String(), ds.Phone, ds.SessionID)
+				// Kirim sinyal presence online (Available) agar WhatsApp mencatat perangkat selalu Aktif 24/7 seperti Fonnte
+				_ = ds.Client.SendPresence(types.PresenceAvailable)
+				log.Printf("[Huwa] Device Terhubung & Terotentikasi: %s (+%s)", ds.SessionID, ds.Phone)
+			} else {
+				// Socket WhatsApp terhubung ke server Meta untuk negosiasi pairing, belum login ke nomor WA
+				ds.IsConnected = false
+				ds.Status = "pairing"
+				log.Printf("[Huwa] Socket WhatsApp terhubung ke Meta (status pairing aktif): %s", ds.SessionID)
+			}
+
+		case *events.PairSuccess:
+			// [HARDCODED AI PROTECTION - JANGAN DIUBAH]: Pengguna berhasil memasukkan kode pairing 8-digit di WhatsApp HP
 			ds.IsConnected = true
 			ds.Status = "connected"
 			ds.QRCode = ""
@@ -389,12 +416,24 @@ func (m *EngineManager) setupEventHandler(ds *DeviceSession) {
 					WHERE session_id = ?
 				`, ds.Client.Store.ID.String(), ds.Phone, ds.SessionID)
 			}
-			log.Printf("[Huwa] Device Terhubung: %s (+%s)", ds.SessionID, ds.Phone)
+			// Kirim sinyal presence online (Available) agar WhatsApp mencatat perangkat selalu Aktif 24/7
+			_ = ds.Client.SendPresence(types.PresenceAvailable)
+			log.Printf("[Huwa] Pairing Berhasil Diverifikasi! Device Terhubung: %s (+%s)", ds.SessionID, ds.Phone)
 
 		case *events.Disconnected:
 			ds.IsConnected = false
 			ds.Status = "disconnected"
 			log.Printf("[Huwa] Device Terputus: %s", ds.SessionID)
+			// Auto-reconnect background segera jika bukan di-logout oleh pengguna
+			if ds.Client != nil && ds.Client.Store != nil && ds.Client.Store.ID != nil {
+				go func(c *whatsmeow.Client, s *DeviceSession) {
+					time.Sleep(3 * time.Second)
+					if !c.IsConnected() && s.Status != "logged_out" {
+						log.Printf("[Huwa] Mencoba menyambungkan kembali sesi %s...", s.SessionID)
+						_ = c.Connect()
+					}
+				}(ds.Client, ds)
+			}
 
 		case *events.LoggedOut:
 			ds.IsConnected = false
@@ -607,4 +646,44 @@ func (m *EngineManager) SendTypingPresence(sessionID, phone, groupJID string) er
 	}
 
 	return ds.Client.SendChatPresence(context.Background(), recipient, types.ChatPresenceComposing, types.ChatPresenceMediaText)
+}
+
+// startWatchdogLoop menjaga koneksi tetap hidup 24/7 dan mengirim presence online seperti Fonnte
+func (m *EngineManager) startWatchdogLoop(interval time.Duration) {
+	ticker := time.NewTicker(interval)
+	defer ticker.Stop()
+
+	for range ticker.C {
+		m.mu.RLock()
+		sessionsToInspect := make([]*DeviceSession, 0, len(m.sessions))
+		for _, s := range m.sessions {
+			sessionsToInspect = append(sessionsToInspect, s)
+		}
+		m.mu.RUnlock()
+
+		for _, ds := range sessionsToInspect {
+			if ds.Client == nil || ds.Client.Store == nil || ds.Client.Store.ID == nil {
+				continue
+			}
+			if ds.Status == "logged_out" {
+				continue
+			}
+
+			// Jika socket terputus, sambungkan kembali otomatis
+			if !ds.Client.IsConnected() {
+				log.Printf("[Huwa Watchdog] Menyambungkan ulang sesi terputus: %s (+%s)", ds.SessionID, ds.Phone)
+				go func(c *whatsmeow.Client) {
+					_ = c.Connect()
+				}(ds.Client)
+				continue
+			}
+
+			// Jika sudah login dan terhubung, kirim denyut kehadiran (Presence Available) 24/7
+			if ds.Client.IsLoggedIn() {
+				ds.IsConnected = true
+				ds.Status = "connected"
+				_ = ds.Client.SendPresence(types.PresenceAvailable)
+			}
+		}
+	}
 }

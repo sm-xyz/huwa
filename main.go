@@ -83,7 +83,13 @@ func main() {
 			return
 		}
 
-		// 2. Session / Pairing / QR Code (GET, POST, PUT, DELETE)
+		// 2. Pairing Code (Link with Phone Number - Seamless & Tanpa Scan QR)
+		if path == "/api/pairing-code" || path == "/pairing-code" || strings.Contains(path, "pairing-code") {
+			api.AuthMiddleware(api.HandlePairingCode)(w, r)
+			return
+		}
+
+		// 3. Session / Status / Disconnect (GET, POST, PUT, DELETE)
 		if path == "/api/session" || path == "/session" || path == "/api/sessions" || path == "/sessions" ||
 			path == "/api/qr" || path == "/qr" || strings.Contains(path, "session") || strings.Contains(path, "qr") {
 			api.AuthMiddleware(api.HandleSession)(w, r)

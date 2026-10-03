@@ -392,8 +392,8 @@ func (m *EngineManager) setupEventHandler(ds *DeviceSession) {
 					UPDATE huwa_metadata SET device_jid = ?, phone = ?, updated_at = CURRENT_TIMESTAMP 
 					WHERE session_id = ?
 				`, ds.Client.Store.ID.String(), ds.Phone, ds.SessionID)
-				// Kirim sinyal presence online (Available) agar WhatsApp mencatat perangkat selalu Aktif 24/7 seperti Fonnte
-				_ = ds.Client.SendPresence(types.PresenceAvailable)
+				// [HARDCODED AI PROTECTION - JANGAN DIUBAH]: Modern Whatsmeow WAJIB menyertakan context.Context sebagai argumen pertama SendPresence
+				_ = ds.Client.SendPresence(context.Background(), types.PresenceAvailable)
 				log.Printf("[Huwa] Device Terhubung & Terotentikasi: %s (+%s)", ds.SessionID, ds.Phone)
 			} else {
 				// Socket WhatsApp terhubung ke server Meta untuk negosiasi pairing, belum login ke nomor WA
@@ -416,8 +416,8 @@ func (m *EngineManager) setupEventHandler(ds *DeviceSession) {
 					WHERE session_id = ?
 				`, ds.Client.Store.ID.String(), ds.Phone, ds.SessionID)
 			}
-			// Kirim sinyal presence online (Available) agar WhatsApp mencatat perangkat selalu Aktif 24/7
-			_ = ds.Client.SendPresence(types.PresenceAvailable)
+			// [HARDCODED AI PROTECTION - JANGAN DIUBAH]: Modern Whatsmeow WAJIB menyertakan context.Context sebagai argumen pertama SendPresence
+			_ = ds.Client.SendPresence(context.Background(), types.PresenceAvailable)
 			log.Printf("[Huwa] Pairing Berhasil Diverifikasi! Device Terhubung: %s (+%s)", ds.SessionID, ds.Phone)
 
 		case *events.Disconnected:
@@ -678,11 +678,11 @@ func (m *EngineManager) startWatchdogLoop(interval time.Duration) {
 				continue
 			}
 
-			// Jika sudah login dan terhubung, kirim denyut kehadiran (Presence Available) 24/7
+			// [HARDCODED AI PROTECTION - JANGAN DIUBAH]: Modern Whatsmeow WAJIB menyertakan context.Context sebagai argumen pertama SendPresence
 			if ds.Client.IsLoggedIn() {
 				ds.IsConnected = true
 				ds.Status = "connected"
-				_ = ds.Client.SendPresence(types.PresenceAvailable)
+				_ = ds.Client.SendPresence(context.Background(), types.PresenceAvailable)
 			}
 		}
 	}

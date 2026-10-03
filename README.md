@@ -1,5 +1,5 @@
 # HUWA (High-Utility WhatsApp Agent)
-### High-Performance Native Multi-Tenant WhatsApp Gateway
+### High-Performance Native Multi-Tenant WhatsApp Gateway for Solusi-WP
 
 HUWA adalah WhatsApp Gateway berbasis **Golang (Whatsmeow)** murni tanpa CGO, dirancang khusus untuk menangani 100–150 device WhatsApp aktif per VPS Node dengan konsumsi RAM super ringan (~20 MB per nomor), simulasi perilaku manusia anti-banned, dan integrasi mulus dengan WordPress Plugin `solusi-wp`.
 
@@ -40,12 +40,12 @@ Installer otomatis melakukan:
 ---
 
 ## 🛡️ Pengaturan Firewall (UFW)
-Untuk mengamankan VPS Huwa agar port `8080` hanya bisa diakses oleh IP VPS Anda:
+Untuk mengamankan VPS Huwa agar port `8080` hanya bisa diakses oleh IP VPS WordPress Anda:
 
 ```bash
 sudo ufw default deny incoming
 sudo ufw allow 22/tcp
-sudo ufw allow from <IP_VPS> to any port 8080 proto tcp
+sudo ufw allow from <IP_VPS_WORDPRESS> to any port 8080 proto tcp
 sudo ufw enable
 ```
 

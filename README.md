@@ -40,7 +40,7 @@ Installer otomatis melakukan:
 ---
 
 ## 🛡️ Pengaturan Firewall (UFW)
-Untuk mengamankan VPS Huwa agar port `8080` hanya bisa diakses oleh IP VPS WordPress Anda:
+Untuk mengamankan VPS Huwa agar port `8080` hanya bisa diakses oleh IP VPS Anda:
 
 ```bash
 sudo ufw default deny incoming

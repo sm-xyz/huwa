@@ -194,6 +194,7 @@ func (h *APIHandler) HandleSession(w http.ResponseWriter, r *http.Request) {
 				"phone":        ds.Phone,
 				"name":         ds.Name,
 				"push_name":    ds.PushName,
+				"pairing_code": "",
 				"id":           sessionID,
 				"sessionId":    sessionID,
 				"session_id":   sessionID,
@@ -201,13 +202,14 @@ func (h *APIHandler) HandleSession(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 
-		// Jika QR Code sudah ada dan sesi masih pairing serta bukan reset, kembalikan QR yang ada
-		if !isReset && ds.QRCode != "" && ds.Status == "pairing" {
+		// Jika QR Code / Pairing Code sudah ada dan sesi masih pairing serta bukan reset
+		if !isReset && ds.Status == "pairing" && (ds.QRCode != "" || ds.PairingCode != "") {
 			_ = json.NewEncoder(w).Encode(map[string]interface{}{
 				"success":      true,
 				"is_connected": false,
 				"isConnected":  false,
 				"status":       "pairing",
+				"pairing_code": ds.PairingCode,
 				"qrcode":       ds.QRCode,
 				"qr":           ds.QRCode,
 				"phone":        ds.Phone,
@@ -220,13 +222,14 @@ func (h *APIHandler) HandleSession(w http.ResponseWriter, r *http.Request) {
 
 		qrBase64, err := h.manager.GenerateQR(ds)
 		if err != nil {
-			// Jika error tapi sudah ada QRCode sebelumnya, kembalikan QRCode sebelumnya
-			if ds.QRCode != "" {
+			// Jika error tapi sudah ada QRCode/PairingCode sebelumnya, kembalikan data sebelumnya
+			if ds.QRCode != "" || ds.PairingCode != "" {
 				_ = json.NewEncoder(w).Encode(map[string]interface{}{
 					"success":      true,
 					"is_connected": false,
 					"isConnected":  false,
 					"status":       "pairing",
+					"pairing_code": ds.PairingCode,
 					"qrcode":       ds.QRCode,
 					"qr":           ds.QRCode,
 					"phone":        ds.Phone,
@@ -246,6 +249,7 @@ func (h *APIHandler) HandleSession(w http.ResponseWriter, r *http.Request) {
 			"is_connected": ds.IsConnected,
 			"isConnected":  ds.IsConnected,
 			"status":       ds.Status,
+			"pairing_code": ds.PairingCode,
 			"qrcode":       qrBase64,
 			"qr":           qrBase64,
 			"phone":        ds.Phone,
@@ -261,16 +265,133 @@ func (h *APIHandler) HandleSession(w http.ResponseWriter, r *http.Request) {
 		if ds.Client != nil {
 			_ = ds.Client.Logout(context.Background())
 			ds.Client.Disconnect()
+			if ds.Client.Store != nil {
+				_ = ds.Client.Store.Delete()
+			}
 		}
 		delete(h.manager.sessions, sessionID)
+		_, _ = h.manager.db.Exec("DELETE FROM huwa_metadata WHERE session_id = ?", sessionID)
 		h.manager.mu.Unlock()
 
 		_ = json.NewEncoder(w).Encode(map[string]interface{}{
 			"success": true,
-			"message": "Sesi berhasil dihapus dan diputus",
+			"message": "Sesi berhasil dihapus dan diputus secara permanen",
 		})
 		return
 	}
+}
+
+// HandlePairingCode menangani permintaan pembuatan 8-digit Kode Pairing WhatsApp tanpa scan QR
+func (h *APIHandler) HandlePairingCode(w http.ResponseWriter, r *http.Request) {
+	w.Header().Set("Content-Type", "application/json")
+
+	if r.Method != http.MethodPost && r.Method != http.MethodGet {
+		w.WriteHeader(http.StatusMethodNotAllowed)
+		_ = json.NewEncoder(w).Encode(map[string]interface{}{"success": false, "message": "Metode tidak diizinkan"})
+		return
+	}
+
+	sessionID := r.Header.Get("session-id")
+	if sessionID == "" {
+		sessionID = r.Header.Get("session_id")
+	}
+	if sessionID == "" {
+		sessionID = r.Header.Get("X-Session-ID")
+	}
+	if sessionID == "" {
+		sessionID = r.URL.Query().Get("session_id")
+	}
+	if sessionID == "" {
+		sessionID = r.URL.Query().Get("sessionId")
+	}
+
+	var reqBody struct {
+		SessionID     string `json:"session_id"`
+		SessionIdAlt  string `json:"sessionId"`
+		Phone         string `json:"phone"`
+		PhoneNumber   string `json:"phone_number"`
+		UserID        int    `json:"user_id"`
+		WebhookURL    string `json:"webhook_url"`
+		WebhookSecret string `json:"webhook_secret"`
+	}
+
+	if r.Body != nil {
+		_ = json.NewDecoder(r.Body).Decode(&reqBody)
+		if sessionID == "" {
+			if reqBody.SessionID != "" {
+				sessionID = reqBody.SessionID
+			} else if reqBody.SessionIdAlt != "" {
+				sessionID = reqBody.SessionIdAlt
+			}
+		}
+	}
+
+	phone := reqBody.Phone
+	if phone == "" {
+		phone = reqBody.PhoneNumber
+	}
+	if phone == "" {
+		phone = r.URL.Query().Get("phone")
+	}
+
+	if phone == "" {
+		w.WriteHeader(http.StatusBadRequest)
+		_ = json.NewEncoder(w).Encode(map[string]interface{}{
+			"success": false,
+			"message": "Nomor WhatsApp wajib diisi untuk membuat kode pairing",
+		})
+		return
+	}
+
+	if sessionID == "" {
+		sessionID = "usr_default"
+	}
+
+	uid := reqBody.UserID
+	if uid == 0 {
+		uidStr := r.URL.Query().Get("uid")
+		uid, _ = strconv.Atoi(uidStr)
+	}
+
+	ds, err := h.manager.GetOrCreateSession(sessionID, uid)
+	if err != nil {
+		w.WriteHeader(http.StatusInternalServerError)
+		_ = json.NewEncoder(w).Encode(map[string]interface{}{"success": false, "message": err.Error()})
+		return
+	}
+
+	if reqBody.WebhookURL != "" {
+		ds.WebhookURL = reqBody.WebhookURL
+	} else if qWh := r.URL.Query().Get("webhook_url"); qWh != "" {
+		ds.WebhookURL = qWh
+	}
+	if reqBody.WebhookSecret != "" {
+		ds.WebhookSecret = reqBody.WebhookSecret
+	} else if qSec := r.URL.Query().Get("webhook_secret"); qSec != "" {
+		ds.WebhookSecret = qSec
+	}
+
+	// Minta kode pairing dari engine Whatsmeow
+	code, err := h.manager.PairPhone(ds, phone)
+	if err != nil {
+		w.WriteHeader(http.StatusInternalServerError)
+		_ = json.NewEncoder(w).Encode(map[string]interface{}{
+			"success": false,
+			"message": err.Error(),
+		})
+		return
+	}
+
+	_ = json.NewEncoder(w).Encode(map[string]interface{}{
+		"success":      true,
+		"pairing_code": code,
+		"code":         code,
+		"phone":        ds.Phone,
+		"status":       ds.Status,
+		"is_connected": ds.IsConnected,
+		"id":           sessionID,
+		"session_id":   sessionID,
+	})
 }
 
 // HandleSendMessage menangani pengiriman pesan teks/gambar

@@ -47,6 +47,7 @@ type DeviceSession struct {
 	IsConnected   bool      `json:"is_connected"`
 	Status        string    `json:"status"` // disconnected, pairing, connected
 	QRCode        string    `json:"qrcode,omitempty"`
+	PairingCode   string    `json:"pairing_code,omitempty"`
 	WebhookURL    string    `json:"webhook_url"`
 	WebhookSecret string    `json:"webhook_secret"`
 	LastSeen      time.Time `json:"last_seen"`
@@ -302,6 +303,74 @@ func (m *EngineManager) GenerateQR(ds *DeviceSession) (string, error) {
 	return "", nil
 }
 
+// PairPhone menghasilkan 8-digit Kode Pairing WhatsApp tanpa perlu scan QR
+func (m *EngineManager) PairPhone(ds *DeviceSession, rawPhone string) (string, error) {
+	if ds == nil {
+		return "", fmt.Errorf("sesi tidak valid")
+	}
+
+	// Normalisasi nomor telepon: hanya digit, buang +, spasi, strip
+	cleanPhone := strings.Map(func(r rune) rune {
+		if r >= '0' && r <= '9' {
+			return r
+		}
+		return -1
+	}, rawPhone)
+
+	// Ubah awalan 08xxx menjadi 628xxx (format internasional standar WhatsApp)
+	if strings.HasPrefix(cleanPhone, "0") {
+		cleanPhone = "62" + cleanPhone[1:]
+	}
+
+	if len(cleanPhone) < 9 {
+		return "", fmt.Errorf("nomor telepon WhatsApp tidak valid (minimal 9 digit)")
+	}
+
+	m.mu.Lock()
+	// Jika client lama sudah terhubung ke nomor lain atau ingin pair ulang, reset store bersih
+	if ds.Client != nil {
+		if ds.Client.IsConnected() {
+			ds.Client.Disconnect()
+		}
+		if ds.Client.Store != nil {
+			_ = ds.Client.Store.Delete()
+		}
+	}
+	newStore := m.container.NewDevice()
+	newClient := whatsmeow.NewClient(newStore, m.logger)
+	ds.Client = newClient
+	ds.IsConnected = false
+	ds.Status = "pairing"
+	ds.Phone = cleanPhone
+	ds.QRCode = ""
+	ds.PairingCode = ""
+	m.setupEventHandler(ds)
+	m.mu.Unlock()
+
+	// Hubungkan socket ke WhatsApp
+	if err := ds.Client.Connect(); err != nil {
+		return "", fmt.Errorf("gagal menghubungkan socket ke server WhatsApp: %w", err)
+	}
+
+	// Tunggu sebentar (1 detik) agar socket handshake stabil
+	time.Sleep(1 * time.Second)
+
+	// Minta Kode Pairing 8 digit ke server WhatsApp
+	ctx, cancel := context.WithTimeout(context.Background(), 25*time.Second)
+	defer cancel()
+
+	code, err := ds.Client.PairPhone(ctx, cleanPhone, true, whatsmeow.PairClientChrome, "Chrome (Linux)")
+	if err != nil {
+		return "", fmt.Errorf("gagal mendapatkan kode pairing dari WhatsApp: %w", err)
+	}
+
+	ds.PairingCode = code
+	ds.Status = "pairing"
+
+	log.Printf("[Huwa] Kode Pairing berhasil dibuat untuk sesi %s (+%s): %s", ds.SessionID, cleanPhone, code)
+	return code, nil
+}
+
 // setupEventHandler memasang listener realtime WhatsApp (Pesan masuk, typing, status)
 func (m *EngineManager) setupEventHandler(ds *DeviceSession) {
 	ds.Client.AddEventHandler(func(rawEvt interface{}) {
@@ -310,6 +379,7 @@ func (m *EngineManager) setupEventHandler(ds *DeviceSession) {
 			ds.IsConnected = true
 			ds.Status = "connected"
 			ds.QRCode = ""
+			ds.PairingCode = ""
 			if ds.Client.Store.ID != nil {
 				ds.Phone = ds.Client.Store.ID.User
 				ds.PushName = ds.Client.Store.PushName
@@ -442,7 +512,7 @@ func (m *EngineManager) GetJoinedGroups(sessionID string) ([]map[string]interfac
 		return nil, fmt.Errorf("sesi %s belum terhubung", sessionID)
 	}
 
-	groups, err := ds.Client.GetJoinedGroups()
+	groups, err := ds.Client.GetJoinedGroups(context.Background())
 	if err != nil {
 		return nil, err
 	}

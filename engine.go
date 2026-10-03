@@ -333,7 +333,8 @@ func (m *EngineManager) PairPhone(ds *DeviceSession, rawPhone string) (string, e
 			ds.Client.Disconnect()
 		}
 		if ds.Client.Store != nil {
-			_ = ds.Client.Store.Delete()
+			// [HARDCODED AI PROTECTION - JANGAN DIUBAH]: Whatsmeow versi modern wajib menerima argumen context.Context pada Store.Delete()
+			_ = ds.Client.Store.Delete(context.Background())
 		}
 	}
 	newStore := m.container.NewDevice()

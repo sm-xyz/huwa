@@ -112,7 +112,7 @@ func NewEngineManager(dbPath, defaultWH, secret string) (*EngineManager, error) 
 		logger:     logger,
 		defaultWH:  defaultWH,
 		secret:     secret,
-		httpClient: &http.Client{Timeout: 10 * time.Second},
+		httpClient: &http.Client{Timeout: 60 * time.Second},
 	}
 
 	// Muat seluruh sesi yang tersimpan sebelumnya di SQLite
@@ -143,7 +143,7 @@ func (m *EngineManager) restoreAllSessions() error {
 		// Cari metadata custom berdasarkan JID lengkap, nomor telepon, atau session_id
 		var customSessionID, whURL, whSec string
 		var uid int
-		row := m.db.QueryRow("SELECT session_id, user_id, webhook_url, webhook_secret FROM huwa_metadata WHERE device_jid = ? OR phone = ? OR session_id = ? OR session_id = ?", dev.ID.String(), dev.ID.User, sessionID, dev.ID.User)
+		row := m.db.QueryRow("SELECT session_id, user_id, webhook_url, webhook_secret FROM huwa_metadata WHERE device_jid = ? OR phone = ? OR session_id = ? OR session_id = ? ORDER BY updated_at DESC LIMIT 1", dev.ID.String(), dev.ID.User, sessionID, dev.ID.User)
 		_ = row.Scan(&customSessionID, &uid, &whURL, &whSec)
 		if customSessionID != "" {
 			sessionID = customSessionID
@@ -480,8 +480,12 @@ func (m *EngineManager) handleIncomingMessage(ds *DeviceSession, msg *events.Mes
 
 	// Bangun payload kompatibel HUWA / Solusi-WP
 	payload := map[string]interface{}{
-		"type": "message",
+		"type":       "message",
+		"session_id": ds.SessionID,
+		"user_id":    ds.UserID,
 		"data": map[string]interface{}{
+			"session_id": ds.SessionID,
+			"user_id":    ds.UserID,
 			"Info": map[string]interface{}{
 				"Sender":    sender,
 				"Chat":      chatJID,
@@ -517,6 +521,10 @@ func (m *EngineManager) handleIncomingMessage(ds *DeviceSession, msg *events.Mes
 			return
 		}
 		req.Header.Set("Content-Type", "application/json")
+		req.Header.Set("X-Session-ID", ds.SessionID)
+		if ds.UserID > 0 {
+			req.Header.Set("X-User-ID", fmt.Sprintf("%d", ds.UserID))
+		}
 		if ds.WebhookSecret != "" {
 			req.Header.Set("X-Token", ds.WebhookSecret)
 		}

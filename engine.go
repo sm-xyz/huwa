@@ -433,7 +433,7 @@ func (m *EngineManager) handleIncomingMessage(ds *DeviceSession, msg *events.Mes
 		return
 	}
 
-	// Bangun payload kompatibel Zawa v2 / Solusi-WP
+	// Bangun payload kompatibel HUWA / Solusi-WP
 	payload := map[string]interface{}{
 		"type": "message",
 		"data": map[string]interface{}{
